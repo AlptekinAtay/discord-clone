@@ -30,3 +30,4 @@ node_modules/
 dist/
 apps/backend/uploads/*
 !apps/backend/uploads/.gitkeep
+apps/backend/users.json

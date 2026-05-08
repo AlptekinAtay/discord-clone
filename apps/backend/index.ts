@@ -8,6 +8,19 @@ import jwt from "jsonwebtoken";
 const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET || "super-secret-discord-clone-key-123";
 
+// --- Whitelist Management ---
+async function loadWhitelist() {
+  try {
+    const file = Bun.file("./users.json");
+    if (await file.exists()) {
+      return JSON.parse(await file.text());
+    }
+  } catch (e) {
+    console.error("Error loading users.json:", e);
+  }
+  return [];
+}
+
 // --- Auth REST API ---
 Bun.serve({
   port: Number(process.env.PORT) || 3000,
@@ -56,48 +69,48 @@ Bun.serve({
     }
 
     if (url.pathname === "/api/register" && req.method === "POST") {
-      try {
-        const { email, username, password } = await req.json();
-        if (!email || !username || !password) {
-          return new Response(JSON.stringify({ error: "Eksik alanlar var" }), { status: 400, headers: corsHeaders });
-        }
-
-        const existingUser = await prisma.user.findFirst({
-          where: { OR: [{ email }, { username }] }
-        });
-        if (existingUser) {
-          return new Response(JSON.stringify({ error: "Bu email veya kullanıcı adı zaten kullanımda" }), { status: 400, headers: corsHeaders });
-        }
-
-        const hashedPassword = await bcrypt.hash(password, 10);
-        const user = await prisma.user.create({
-          data: { email, username, password: hashedPassword }
-        });
-
-        const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
-
-        return new Response(JSON.stringify({
-          token,
-          user: { id: user.id, username: user.username, email: user.email, avatarUrl: user.avatarUrl }
-        }), { status: 201, headers: corsHeaders });
-
-      } catch (e: any) {
-        return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: corsHeaders });
-      }
+      return new Response(JSON.stringify({ error: "Registration is disabled for this private server" }), { status: 403, headers: corsHeaders });
     }
 
     if (url.pathname === "/api/login" && req.method === "POST") {
       try {
         const { email, password } = await req.json();
-        const user = await prisma.user.findUnique({ where: { email } });
-        if (!user) {
-          return new Response(JSON.stringify({ error: "Geçersiz e-posta veya şifre" }), { status: 400, headers: corsHeaders });
+        
+        // 1. Check Whitelist (users.json)
+        const whitelist = await loadWhitelist();
+        const whiteUser = whitelist.find((u: any) => u.email === email);
+        
+        if (!whiteUser) {
+          return new Response(JSON.stringify({ error: "Access denied: You are not in the whitelist" }), { status: 403, headers: corsHeaders });
         }
 
-        const isValid = await bcrypt.compare(password, user.password);
-        if (!isValid) {
-          return new Response(JSON.stringify({ error: "Geçersiz e-posta veya şifre" }), { status: 400, headers: corsHeaders });
+        // 2. Verify Password (Plain-text or Bcrypt)
+        let isValid = false;
+        if (whiteUser.password === password) {
+          isValid = true;
+        } else {
+          try {
+            isValid = await bcrypt.compare(password, whiteUser.password);
+          } catch (e) {
+            isValid = false;
+          }
         }
+
+        if (!isValid) {
+          return new Response(JSON.stringify({ error: "Invalid password" }), { status: 400, headers: corsHeaders });
+        }
+
+        // 3. Sync with Prisma DB for system compatibility
+        const user = await prisma.user.upsert({
+          where: { email: whiteUser.email },
+          update: { username: whiteUser.username },
+          create: {
+            id: whiteUser.id || crypto.randomUUID(),
+            email: whiteUser.email,
+            username: whiteUser.username,
+            password: whiteUser.password.startsWith("$2") ? whiteUser.password : await bcrypt.hash(whiteUser.password, 10)
+          }
+        });
 
         const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
 
