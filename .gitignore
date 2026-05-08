@@ -1,0 +1,32 @@
+# --- KRİTİK (Özel Bilgiler) ---
+.env
+dev.db
+dev.db-journal
+*.db
+*.log
+
+# --- BAĞIMLILIKLAR ---
+node_modules/
+.bun/
+bun.lockb
+
+# --- TAURI & BUILD (Boyutu Çok Büyük Olanlar) ---
+src-tauri/target/
+src-tauri/binaries/
+dist/
+build/
+.pnpm-debug.log*
+
+# --- MAC ÖZEL ---
+.DS_Store
+.apple_desktop
+.gemini/
+
+# --- HASSAS VERİLER ---
+*.db
+*.db-journal
+.env
+node_modules/
+dist/
+apps/backend/uploads/*
+!apps/backend/uploads/.gitkeep

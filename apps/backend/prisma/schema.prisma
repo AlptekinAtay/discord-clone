@@ -1,0 +1,38 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model User {
+  id        String    @id @default(uuid())
+  email     String    @unique
+  username  String    @unique
+  password  String
+  avatarUrl String?
+  createdAt DateTime  @default(now())
+  messages  Message[]
+}
+
+model Channel {
+  id        String    @id @default(uuid())
+  name      String
+  type      String    @default("text")
+  createdAt DateTime  @default(now())
+  messages  Message[]
+}
+
+model Message {
+  id        String   @id @default(uuid())
+  content   String?
+  fileUrl   String?
+  fileType  String?
+  createdAt DateTime @default(now())
+  authorId  String
+  channelId String
+  author    User     @relation(fields: [authorId], references: [id])
+  channel   Channel  @relation(fields: [channelId], references: [id])
+}

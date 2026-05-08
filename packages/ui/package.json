@@ -1,0 +1,8 @@
+{
+  "name": "@discord-clone/ui",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "dependencies": {
+    "react": "^18.2.0"
+  }
+}

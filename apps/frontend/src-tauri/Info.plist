@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Discord clone voice chat needs microphone access.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>Discord clone video chat needs camera access.</string>
+</dict>
+</plist>
