@@ -574,7 +574,7 @@ wss.on("connection", (ws, req) => {
         }
 
         case "create-transport": {
-          console.log("--> Transport isteği geldi, oluşturuluyor...");
+          console.log(`--> [${peer.username}] Transport isteği geldi, oluşturuluyor...`);
           const { channelId } = payload;
           const router = routers.get(channelId);
           if (!router) throw new Error("Router not found");

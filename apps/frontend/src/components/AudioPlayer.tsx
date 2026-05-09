@@ -1,6 +1,23 @@
 import { useEffect, useRef } from "react";
 import { useVoiceStore } from "../store/useVoiceStore";
 
+// Global set to keep track of all active audio contexts for resumption on user interaction
+const activeAudioContexts = new Set<AudioContext>();
+
+if (typeof window !== "undefined") {
+  const resumeAllContexts = () => {
+    activeAudioContexts.forEach(ctx => {
+      if (ctx.state === "suspended") {
+        ctx.resume().catch(err => console.warn("Failed to resume AudioContext on interaction:", err));
+      }
+    });
+  };
+
+  window.addEventListener("click", resumeAllContexts);
+  window.addEventListener("touchstart", resumeAllContexts);
+  window.addEventListener("keydown", resumeAllContexts);
+}
+
 export function AudioPlayer({ isDeafened }: { isDeafened: boolean }) {
   const { consumers, consumerStates } = useVoiceStore();
   const audioTracks = Object.entries(consumers).filter(([_, track]) => track.kind === 'audio');
@@ -80,6 +97,7 @@ function ConsumerAudio({
         const AudioContextClass = (window.AudioContext || (window as any).webkitAudioContext);
         const ctx = new AudioContextClass();
         audioCtxRef.current = ctx;
+        activeAudioContexts.add(ctx);
 
         const source = ctx.createMediaElementSource(el);
         const gainNode = ctx.createGain();
@@ -102,6 +120,7 @@ function ConsumerAudio({
   useEffect(() => {
     return () => {
       if (audioCtxRef.current) {
+        activeAudioContexts.delete(audioCtxRef.current);
         audioCtxRef.current.close();
         audioCtxRef.current = null;
         gainNodeRef.current = null;

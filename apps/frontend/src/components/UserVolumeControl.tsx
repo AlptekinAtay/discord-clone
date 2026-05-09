@@ -35,10 +35,13 @@ export function UserVolumeControl({ peerId }: UserVolumeControlProps) {
     if (!showSlider && btnRef.current) {
       const rect = btnRef.current.getBoundingClientRect();
       // Position popup to the right of the button, vertically centered
-      setPopupPos({
-        top: rect.top + rect.height / 2,
-        left: rect.right + 8,
-      });
+      // Ensure it doesn't go off-screen at the bottom
+      const popupHeight = 110; // approximate
+      let top = rect.top + rect.height / 2;
+      if (top + popupHeight / 2 > window.innerHeight - 20) {
+        top = window.innerHeight - popupHeight / 2 - 20;
+      }
+      setPopupPos({ top, left: rect.right + 8 });
     }
     setShowSlider(!showSlider);
   };

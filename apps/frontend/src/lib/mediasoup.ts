@@ -15,31 +15,51 @@ class SFUClient {
   private pendingRequests = new Map<string, { resolve: Function, reject: Function }>();
   private recvTransportReady = false;
   private pendingProducers: Array<{ producerId: string; peerId: string }> = [];
+  private connectionPromise: Promise<void> | null = null;
 
   async connect(wsUrl: string): Promise<void> {
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+    // If already open, just resolve
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       return Promise.resolve();
     }
-    this.ws = new WebSocket(wsUrl);
 
-    return new Promise<void>((resolve, reject) => {
-      this.ws!.onopen = () => {
-        console.log("WebSocket connected, waiting for READY...");
+    // If currently connecting, return the existing promise
+    if (this.ws && this.ws.readyState === WebSocket.CONNECTING && this.connectionPromise) {
+      return this.connectionPromise;
+    }
+
+    // Otherwise, start a new connection
+    this.connectionPromise = new Promise<void>((resolve, reject) => {
+      console.log("[SFU] Connecting to", wsUrl);
+      this.ws = new WebSocket(wsUrl);
+
+      const timeout = setTimeout(() => {
+        reject(new Error("Connection timeout"));
+        this.ws?.close();
+      }, 10000);
+
+      this.ws.onopen = () => {
+        console.log("[SFU] WebSocket connected, waiting for READY...");
       };
 
-      this.ws!.onmessage = async (event) => {
+      this.ws.onmessage = async (event) => {
         const data = JSON.parse(event.data);
-        const { type, payload } = data;
+        const { type, payload, id } = data;
 
-        if (data.id && this.pendingRequests.has(data.id)) {
-          if (data.error) this.pendingRequests.get(data.id)!.reject(new Error(data.error));
-          else this.pendingRequests.get(data.id)!.resolve(payload);
-          this.pendingRequests.delete(data.id);
+        // Handle requests (ACKs)
+        if (id && this.pendingRequests.has(id)) {
+          clearTimeout(timeout);
+          const { resolve: reqResolve, reject: reqReject } = this.pendingRequests.get(id)!;
+          if (data.error) reqReject(new Error(data.error));
+          else reqResolve(payload);
+          this.pendingRequests.delete(id);
           return;
         }
 
+        // Handle events
         switch (type) {
           case "READY":
+            clearTimeout(timeout);
             useVoiceStore.getState().setMyPeerId(payload.peerId);
             if (payload.channels && this.onChannelsUpdated) {
               this.onChannelsUpdated(payload.channels);
@@ -89,22 +109,26 @@ class SFUClient {
         }
       };
 
-      this.ws!.onerror = (err) => {
+      this.ws.onerror = (err) => {
+        clearTimeout(timeout);
         console.error("[SFU] WebSocket error:", err);
+        this.connectionPromise = null;
         reject(err);
       };
 
-      this.ws!.onclose = () => {
+      this.ws.onclose = () => {
+        clearTimeout(timeout);
         console.log("[SFU] WebSocket closed — cleaning up client state");
         useVoiceStore.getState().setConnected(false);
-        // Clean up all client state since server has already reset our peer
         this._cleanupLocalState();
         this.ws = null;
+        this.connectionPromise = null;
       };
     });
+
+    return this.connectionPromise;
   }
 
-  /** Cleans up local state WITHOUT sending any messages (used on disconnect) */
   private _cleanupLocalState() {
     try { if (this.audioProducer) this.audioProducer.close(); } catch (_) {}
     try { if (this.videoProducer) this.videoProducer.close(); } catch (_) {}
@@ -192,7 +216,6 @@ class SFUClient {
   async joinRoom(channelId: string) {
     if (this.channelId === channelId) return;
 
-    // Leave existing room cleanly
     if (this.channelId) {
       await this.request("leave-room").catch(e => console.warn(e));
     }
@@ -228,12 +251,11 @@ class SFUClient {
       } catch (err) { errback(err); }
     });
 
-    // Mark as ready and drain the queue of producers that arrived before we were ready
     this.recvTransportReady = true;
     useVoiceStore.getState().setConnected(true);
     useVoiceStore.getState().setActiveChannel(channelId);
 
-    console.log(`[SFU] Ready. Draining ${this.pendingProducers.length} queued producers...`);
+    console.log(`[SFU] Ready for ${channelId}. Draining ${this.pendingProducers.length} queued producers...`);
     const toConsume = [...this.pendingProducers];
     this.pendingProducers = [];
     for (const { producerId, peerId } of toConsume) {
@@ -245,9 +267,20 @@ class SFUClient {
   async produceAudio() {
     if (!this.device || !this.sendTransport) return;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: false,
+          autoGainControl: false
+        } 
+      });
       const track = stream.getAudioTracks()[0];
-      this.audioProducer = await this.sendTransport.produce({ track });
+      this.audioProducer = await this.sendTransport.produce({ 
+        track,
+        codecOptions: {
+          opusDtx: false
+        }
+      });
 
       useVoiceStore.subscribe((state) => {
         if (this.audioProducer) {
@@ -255,10 +288,6 @@ class SFUClient {
           else if (!state.myMicMuted && this.audioProducer.paused) this.audioProducer.resume();
         }
       });
-
-      setInterval(() => {
-        useVoiceStore.getState().setPeerSpeaking("me", !useVoiceStore.getState().myMicMuted && Math.random() > 0.5);
-      }, 500);
     } catch (err) {
       console.error("Produce audio error:", err);
       throw err;
@@ -315,10 +344,6 @@ class SFUClient {
       await this.request("resume-consumer", { consumerId: consumer.id });
       useVoiceStore.getState().addConsumer(consumer.id, consumer.track, peerId);
       console.log(`[SFU] ✓ Consumer added for peer ${peerId}, kind=${kind}`);
-
-      setInterval(() => {
-        useVoiceStore.getState().setPeerSpeaking(peerId, Math.random() > 0.7);
-      }, 500);
     } catch (err) {
       console.error("[SFU] Could not consume track:", err);
     }
