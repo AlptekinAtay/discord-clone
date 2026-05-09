@@ -580,7 +580,10 @@ wss.on("connection", (ws, req) => {
           if (!router) throw new Error("Router not found");
 
           const transport = await router.createWebRtcTransport({
-            listenIps: [{ ip: "0.0.0.0", announcedIp: process.env.ANNOUNCED_IP as string }],
+            listenIps: [{ 
+              ip: process.env.LISTEN_IP || "0.0.0.0", 
+              announcedIp: process.env.ANNOUNCED_IP as string 
+            }],
             enableUdp: true,
             enableTcp: true,
             preferUdp: true,
