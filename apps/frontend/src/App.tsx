@@ -1,12 +1,13 @@
 import { useEffect, useState, useRef } from "react";
 import {
-  Volume2, Mic, MicOff, MonitorUp, PhoneOff, Maximize, X, LogOut, Hash, Plus, Headphones, Trash2, Paperclip
+  Volume2, VolumeX, Mic, MicOff, MonitorUp, PhoneOff, Maximize, X, LogOut, Hash, Plus, Headphones, Trash2, Paperclip
 } from "lucide-react";
 import { useVoiceStore } from "./store/useVoiceStore";
 import { useChatStore } from "./store/useChatStore";
 import { useAuthStore } from "./store/useAuthStore";
 import { sfu } from "./lib/mediasoup";
 import { AudioPlayer } from "./components/AudioPlayer";
+import { UserVolumeControl } from "./components/UserVolumeControl";
 
 
 function VideoPlayer({ track }: { track: MediaStreamTrack }) {
@@ -48,7 +49,8 @@ function App() {
     isConnected, activeChannel, myMicMuted, peers, channelPeers, channelUsers,
     myPeerId, toggleMic, videoProducers, isScreenSharing, consumers,
     activeWatchStream, globalLivePeers, localScreenTrack,
-    isDeafened, toggleDeafen, globalOnlineUsers
+    isDeafened, toggleDeafen, globalOnlineUsers,
+    peerAudioConsumerMap, consumerStates
   } = useVoiceStore();
 
   const { activeTextChannel, messages, setActiveTextChannel } = useChatStore();
@@ -62,7 +64,17 @@ function App() {
   useEffect(() => {
     if (!token) return;
     sfu.onChannelsUpdated = (newChannels) => setChannels(newChannels);
-    sfu.connect(`${import.meta.env.VITE_WS_URL}?token=${token}`).then(() => sfu.requestPresence());
+
+    const doConnect = () => {
+      sfu.connect(`${import.meta.env.VITE_WS_URL}?token=${token}`)
+        .then(() => sfu.requestPresence())
+        .catch(err => console.warn("[App] WS connect failed:", err));
+    };
+
+    doConnect();
+    // Reconnect when window regains focus (handles Safari background tab disconnect)
+    window.addEventListener("focus", doConnect);
+    return () => window.removeEventListener("focus", doConnect);
   }, [token]);
 
   useEffect(() => {
@@ -261,11 +273,22 @@ function App() {
                       const isSpeaking = peers[pid]?.isSpeaking;
                       const isLive = !!videoProducers[pid] || globalLivePeers.includes(pid);
                       const pu = channelUsers[pid];
+                      
+                      const audioConsumerId = peerAudioConsumerMap[pid];
+                      const isLocallyMuted = audioConsumerId ? consumerStates[audioConsumerId]?.isMuted : false;
+
                       return (
                         <div key={pid} className="flex items-center gap-2 group/peer relative">
                           <img src={pu?.avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${pu?.username || pid}`} alt="peer" className={`w-6 h-6 rounded-full shrink-0 border-2 transition-all ${isSpeaking ? 'border-green-500' : 'border-transparent'}`} />
                           <span className={`text-[13px] flex-1 truncate ${isSpeaking ? 'text-white' : 'text-[#949ba4]'}`}>{pu?.username || `User ${pid.substring(0,4)}`}</span>
-                          <div className="flex items-center gap-1">{pu?.deafened && <Headphones size={12} className="text-red-500" />}{pu?.micMuted && !pu?.deafened && <MicOff size={12} className="text-red-500" />}{isLive && activeWatchStream === pid && (<button onClick={(e) => { e.stopPropagation(); sfu.stopWatching(); }} className="text-[9px] font-bold border border-red-500 text-red-500 px-1 py-0.5 rounded uppercase hover:bg-red-500 hover:text-white transition-colors leading-none">Stop</button>)}{isLive && activeWatchStream !== pid && (<button onClick={async (e) => { e.stopPropagation(); if (activeChannel !== c.id) { await handleJoinVoice(c.id); setTimeout(() => sfu.watchStream(pid), 600); } else sfu.watchStream(pid); }} className="text-[9px] font-bold bg-red-500 text-white px-1 py-0.5 rounded uppercase hover:bg-red-600 transition-colors leading-none">Watch</button>)}</div>
+                          <div className="flex items-center gap-1">
+                            {isLocallyMuted && <VolumeX size={12} className="text-red-500" />}
+                            {pu?.deafened && <Headphones size={12} className="text-red-500" />}
+                            {pu?.micMuted && !pu?.deafened && <MicOff size={12} className="text-red-500" />}
+                            <UserVolumeControl peerId={pid} />
+                            {isLive && activeWatchStream === pid && (<button onClick={(e) => { e.stopPropagation(); sfu.stopWatching(); }} className="text-[9px] font-bold border border-red-500 text-red-500 px-1 py-0.5 rounded uppercase hover:bg-red-500 hover:text-white transition-colors leading-none">Stop</button>)}
+                            {isLive && activeWatchStream !== pid && (<button onClick={async (e) => { e.stopPropagation(); if (activeChannel !== c.id) { await handleJoinVoice(c.id); setTimeout(() => sfu.watchStream(pid), 600); } else sfu.watchStream(pid); }} className="text-[9px] font-bold bg-red-500 text-white px-1 py-0.5 rounded uppercase hover:bg-red-600 transition-colors leading-none">Watch</button>)}
+                          </div>
                         </div>
                       );
                     })}

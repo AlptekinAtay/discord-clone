@@ -13,16 +13,20 @@ class SFUClient {
   private videoProducer: any = null;
   private channelId: string | null = null;
   private pendingRequests = new Map<string, { resolve: Function, reject: Function }>();
+  private recvTransportReady = false;
+  private pendingProducers: Array<{ producerId: string; peerId: string }> = [];
 
-  async connect(wsUrl: string) {
-    if (this.ws) return; // Already connected
+  async connect(wsUrl: string): Promise<void> {
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      return Promise.resolve();
+    }
     this.ws = new WebSocket(wsUrl);
-    
+
     return new Promise<void>((resolve, reject) => {
       this.ws!.onopen = () => {
         console.log("WebSocket connected, waiting for READY...");
       };
-      
+
       this.ws!.onmessage = async (event) => {
         const data = JSON.parse(event.data);
         const { type, payload } = data;
@@ -44,28 +48,23 @@ class SFUClient {
             resolve();
             break;
           case "channel-state":
-            // Global state of who is in which channel
             useVoiceStore.getState().setChannelPeers(payload.channels);
             useVoiceStore.getState().setGlobalLivePeers(payload.livePeers);
-            if (payload.users) {
-              useVoiceStore.getState().setChannelUsers(payload.users);
-            }
-            if (payload.globalOnlineUsers) {
-              useVoiceStore.getState().setGlobalOnlineUsers(payload.globalOnlineUsers);
-            }
+            if (payload.users) useVoiceStore.getState().setChannelUsers(payload.users);
+            if (payload.globalOnlineUsers) useVoiceStore.getState().setGlobalOnlineUsers(payload.globalOnlineUsers);
             break;
           case "channels-updated":
-            // Global channel list update
-            // We need a way to notify the UI about this. 
-            // I'll add a listener or just a callback property.
             if (this.onChannelsUpdated) this.onChannelsUpdated(payload.channels);
             break;
           case "new-producer":
             useVoiceStore.getState().addPeer(payload.peerId);
             if (payload.kind === 'video') {
               useVoiceStore.getState().addVideoProducer(payload.peerId, payload.producerId);
+            } else if (this.recvTransportReady) {
+              await this.consume(payload.producerId, payload.peerId);
             } else {
-              await this.consume(payload.producerId);
+              console.log("[SFU] Queuing producer for", payload.peerId);
+              this.pendingProducers.push({ producerId: payload.producerId, peerId: payload.peerId });
             }
             break;
           case "peer-stopped-video":
@@ -80,7 +79,6 @@ class SFUClient {
           case "producer-closed":
             useVoiceStore.getState().removeConsumer(payload.consumerId);
             break;
-          // --- CHAT LOGIC ---
           case "new-message": {
             const msg = payload.author
               ? { ...payload.message, author: payload.author }
@@ -88,21 +86,43 @@ class SFUClient {
             useChatStore.getState().addMessage(msg);
             break;
           }
-          // channel-messages is handled via request() resolve — no push case needed
-          // --- CHAT LOGIC ---
         }
       };
 
-      this.ws!.onerror = reject;
-      
+      this.ws!.onerror = (err) => {
+        console.error("[SFU] WebSocket error:", err);
+        reject(err);
+      };
+
       this.ws!.onclose = () => {
+        console.log("[SFU] WebSocket closed — cleaning up client state");
         useVoiceStore.getState().setConnected(false);
+        // Clean up all client state since server has already reset our peer
+        this._cleanupLocalState();
         this.ws = null;
       };
     });
   }
 
-  // --- CHAT LOGIC ---
+  /** Cleans up local state WITHOUT sending any messages (used on disconnect) */
+  private _cleanupLocalState() {
+    try { if (this.audioProducer) this.audioProducer.close(); } catch (_) {}
+    try { if (this.videoProducer) this.videoProducer.close(); } catch (_) {}
+    try { if (this.sendTransport) this.sendTransport.close(); } catch (_) {}
+    try { if (this.recvTransport) this.recvTransport.close(); } catch (_) {}
+    this.audioProducer = null;
+    this.videoProducer = null;
+    this.sendTransport = null;
+    this.recvTransport = null;
+    this.device = null;
+    this.channelId = null;
+    this.recvTransportReady = false;
+    this.pendingProducers = [];
+    useVoiceStore.getState().clearPeers();
+    useVoiceStore.getState().setActiveChannel(null);
+    useVoiceStore.getState().setScreenSharing(false, null);
+  }
+
   isConnected(): boolean {
     return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
   }
@@ -110,9 +130,7 @@ class SFUClient {
   async fetchChannelMessages(channelId: string) {
     try {
       const payload = await this.request("get-messages", { channelId });
-      if (payload?.messages) {
-        useChatStore.getState().setMessages(channelId, payload.messages);
-      }
+      if (payload?.messages) useChatStore.getState().setMessages(channelId, payload.messages);
     } catch (e) {
       console.warn("fetchChannelMessages failed:", e);
     }
@@ -141,12 +159,11 @@ class SFUClient {
   async deleteChannel(channelId: string) {
     return await this.request("delete-channel", { channelId });
   }
-  // ------------------
 
   private request(type: string, payload: any = {}): Promise<any> {
     return new Promise((resolve, reject) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-         return reject(new Error("WebSocket not connected"));
+        return reject(new Error("WebSocket not connected"));
       }
       const id = Math.random().toString(36).substring(7);
       this.pendingRequests.set(id, { resolve, reject });
@@ -158,21 +175,7 @@ class SFUClient {
     if (this.channelId) {
       await this.request("leave-room").catch(e => console.warn("Failed to send leave-room", e));
     }
-    
-    if (this.audioProducer) this.audioProducer.close();
-    if (this.videoProducer) this.videoProducer.close();
-    if (this.sendTransport) this.sendTransport.close();
-    if (this.recvTransport) this.recvTransport.close();
-    
-    this.audioProducer = null;
-    this.videoProducer = null;
-    this.sendTransport = null;
-    this.recvTransport = null;
-    this.device = null;
-    this.channelId = null;
-    useVoiceStore.getState().clearPeers();
-    useVoiceStore.getState().setActiveChannel(null);
-    useVoiceStore.getState().setScreenSharing(false, null);
+    this._cleanupLocalState();
   }
 
   async stopWatching() {
@@ -186,12 +189,15 @@ class SFUClient {
     }
   }
 
-
   async joinRoom(channelId: string) {
     if (this.channelId === channelId) return;
-    
-    await this.leaveRoom(); // Clean up old room if any
-    
+
+    // Leave existing room cleanly
+    if (this.channelId) {
+      await this.request("leave-room").catch(e => console.warn(e));
+    }
+    this._cleanupLocalState();
+
     this.channelId = channelId;
     this.device = new Device();
 
@@ -200,14 +206,12 @@ class SFUClient {
 
     const sendTransportInfo = await this.request("create-transport", { channelId });
     this.sendTransport = this.device.createSendTransport(sendTransportInfo);
-
     this.sendTransport.on("connect", async ({ dtlsParameters }: any, callback: Function, errback: Function) => {
       try {
         await this.request("connect-transport", { transportId: this.sendTransport.id, dtlsParameters });
         callback();
       } catch (err) { errback(err); }
     });
-
     this.sendTransport.on("produce", async ({ kind, rtpParameters }: any, callback: Function, errback: Function) => {
       try {
         const { id } = await this.request("produce", { transportId: this.sendTransport.id, kind, rtpParameters, channelId });
@@ -217,7 +221,6 @@ class SFUClient {
 
     const recvTransportInfo = await this.request("create-transport", { channelId });
     this.recvTransport = this.device.createRecvTransport(recvTransportInfo);
-
     this.recvTransport.on("connect", async ({ dtlsParameters }: any, callback: Function, errback: Function) => {
       try {
         await this.request("connect-transport", { transportId: this.recvTransport.id, dtlsParameters });
@@ -225,54 +228,53 @@ class SFUClient {
       } catch (err) { errback(err); }
     });
 
+    // Mark as ready and drain the queue of producers that arrived before we were ready
+    this.recvTransportReady = true;
     useVoiceStore.getState().setConnected(true);
     useVoiceStore.getState().setActiveChannel(channelId);
+
+    console.log(`[SFU] Ready. Draining ${this.pendingProducers.length} queued producers...`);
+    const toConsume = [...this.pendingProducers];
+    this.pendingProducers = [];
+    for (const { producerId, peerId } of toConsume) {
+      console.log("[SFU] Consuming queued producer from", peerId);
+      await this.consume(producerId, peerId);
+    }
   }
 
   async produceAudio() {
     if (!this.device || !this.sendTransport) return;
-
     try {
-       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-       const track = stream.getAudioTracks()[0];
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const track = stream.getAudioTracks()[0];
+      this.audioProducer = await this.sendTransport.produce({ track });
 
-       this.audioProducer = await this.sendTransport.produce({ track });
+      useVoiceStore.subscribe((state) => {
+        if (this.audioProducer) {
+          if (state.myMicMuted && !this.audioProducer.paused) this.audioProducer.pause();
+          else if (!state.myMicMuted && this.audioProducer.paused) this.audioProducer.resume();
+        }
+      });
 
-       useVoiceStore.subscribe((state) => {
-         if (this.audioProducer) {
-           if (state.myMicMuted && !this.audioProducer.paused) this.audioProducer.pause();
-           else if (!state.myMicMuted && this.audioProducer.paused) this.audioProducer.resume();
-         }
-       });
-
-       setInterval(() => {
-         useVoiceStore.getState().setPeerSpeaking("me", !useVoiceStore.getState().myMicMuted && Math.random() > 0.5);
-       }, 500);
+      setInterval(() => {
+        useVoiceStore.getState().setPeerSpeaking("me", !useVoiceStore.getState().myMicMuted && Math.random() > 0.5);
+      }, 500);
     } catch (err) {
-       console.error("Produce audio error:", err);
-       throw err;
+      console.error("Produce audio error:", err);
+      throw err;
     }
   }
 
   async startScreenShare() {
     if (!this.sendTransport) throw new Error("No send transport");
-    
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } }
       });
       const track = stream.getVideoTracks()[0];
-      
-      this.videoProducer = await this.sendTransport.produce({ 
-        track, 
-        encodings: [{ maxBitrate: 8000000 }] 
-      });
-      
+      this.videoProducer = await this.sendTransport.produce({ track, encodings: [{ maxBitrate: 8000000 }] });
       useVoiceStore.getState().setScreenSharing(true, track);
-      
-      this.videoProducer.on("trackended", () => {
-        this.stopScreenShare();
-      });
+      this.videoProducer.on("trackended", () => this.stopScreenShare());
     } catch (err) {
       console.error("Screen sharing denied or failed:", err);
       throw err;
@@ -292,13 +294,16 @@ class SFUClient {
     const producerId = useVoiceStore.getState().videoProducers[peerId];
     if (!producerId) return;
     useVoiceStore.getState().setActiveWatchStream(peerId);
-    await this.consume(producerId);
+    await this.consume(producerId, peerId);
   }
 
-  async consume(producerId: string) {
-    if (!this.device || !this.recvTransport) return;
-
+  async consume(producerId: string, peerId: string) {
+    if (!this.device || !this.recvTransport) {
+      console.warn("[SFU] consume called but device/recvTransport not ready");
+      return;
+    }
     try {
+      console.log(`[SFU] Consuming producer ${producerId} from peer ${peerId}`);
       const { id, kind, rtpParameters } = await this.request("consume", {
         channelId: this.channelId,
         transportId: this.recvTransport.id,
@@ -306,21 +311,16 @@ class SFUClient {
         rtpCapabilities: this.device.rtpCapabilities
       });
 
-      const consumer = await this.recvTransport.consume({
-        id,
-        producerId,
-        kind,
-        rtpParameters
-      });
-
+      const consumer = await this.recvTransport.consume({ id, producerId, kind, rtpParameters });
       await this.request("resume-consumer", { consumerId: consumer.id });
-      useVoiceStore.getState().addConsumer(consumer.id, consumer.track);
+      useVoiceStore.getState().addConsumer(consumer.id, consumer.track, peerId);
+      console.log(`[SFU] ✓ Consumer added for peer ${peerId}, kind=${kind}`);
 
       setInterval(() => {
-        useVoiceStore.getState().setPeerSpeaking(producerId, Math.random() > 0.7);
+        useVoiceStore.getState().setPeerSpeaking(peerId, Math.random() > 0.7);
       }, 500);
     } catch (err) {
-      console.warn("Could not consume track:", err);
+      console.error("[SFU] Could not consume track:", err);
     }
   }
 }
