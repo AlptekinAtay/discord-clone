@@ -6,25 +6,97 @@ import { useVoiceStore } from "./store/useVoiceStore";
 import { useChatStore } from "./store/useChatStore";
 import { useAuthStore } from "./store/useAuthStore";
 import { sfu } from "./lib/mediasoup";
-import { AudioPlayer } from "./components/AudioPlayer";
+import { AudioPlayer, resumeAudioContexts } from "./components/AudioPlayer";
 import { UserVolumeControl } from "./components/UserVolumeControl";
 
 
 function VideoPlayer({ track }: { track: MediaStreamTrack }) {
+  const { activeWatchStream, consumers, consumerPeerMap, screenAudioStates, setScreenAudioVolume, setScreenAudioMuted } = useVoiceStore();
   const videoRef = useRef<HTMLVideoElement>(null);
+
+  const peerId = activeWatchStream;
+  const audioTrack = peerId ? Object.entries(consumers).find(([cid, t]) =>
+    t.kind === 'audio' &&
+    consumerPeerMap[cid] === peerId &&
+    (t as any).appData?.source === 'screen-audio'
+  )?.[1] : null;
+
   useEffect(() => {
-    if (videoRef.current && track) videoRef.current.srcObject = new MediaStream([track]);
-  }, [track]);
+    const video = videoRef.current;
+    if (video && track) {
+      if (track.muted) {
+        console.warn("[VideoPlayer] Warning: Track is hardware muted (no data?)");
+      }
+
+      console.log("[VideoPlayer] Attaching tracks. Video:", track.id, "Audio:", audioTrack?.id);
+      video.srcObject = new MediaStream([track, audioTrack].filter(Boolean) as MediaStreamTrack[]);
+
+      video.onloadedmetadata = () => {
+        console.log("[VideoPlayer] Metadata loaded, triggering play");
+        video.play().catch(err => console.error("[VideoPlayer] Play hatası:", err));
+      };
+
+      video.play().catch(err => console.warn("[VideoPlayer] Immediate play blocked:", err));
+    }
+    return () => {
+      if (video) video.srcObject = null;
+    };
+  }, [track, audioTrack]);
+
+  const consumerId = peerId ? Object.entries(consumers).find(([cid, t]) =>
+    t.kind === 'audio' &&
+    consumerPeerMap[cid] === peerId &&
+    (t as any).appData?.source === 'screen-audio'
+  )?.[0] : null;
+  const [streamVolume, setStreamVolume] = useState(1);
+  const state = consumerId ? screenAudioStates[consumerId] : { volume: 100, isMuted: false };
+
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.volume = streamVolume;
+      videoRef.current.muted = state.isMuted;
+    }
+  }, [streamVolume, state.isMuted]);
+
   const toggleFullscreen = () => {
     if (videoRef.current) {
       document.fullscreenElement ? document.exitFullscreen() : videoRef.current.requestFullscreen();
     }
   };
+
   return (
-    <div className="relative w-full bg-black flex justify-center items-center rounded-lg overflow-hidden border border-[#1f2023] mb-4 shadow-xl shrink-0 group">
-      <video ref={videoRef} autoPlay playsInline className="w-full max-h-[60vh] object-contain" />
+    <div className="relative w-full h-full flex items-center justify-center bg-black rounded-lg overflow-hidden border border-[#1f2023] mb-4 shadow-xl shrink-0 group relative">
+      <video ref={videoRef} autoPlay playsInline className="max-w-full max-h-full object-contain" />
       <div className="absolute top-2 left-2 bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded uppercase shadow-sm">LIVE</div>
-      <button onClick={() => sfu.stopWatching()} className="absolute top-2 right-2 bg-black/60 text-white p-1 rounded hover:bg-red-500 transition-colors opacity-0 group-hover:opacity-100" title="Stop Watching"><X size={16} /></button>
+
+      <div className="absolute top-2 right-2 flex gap-2">
+        <button onClick={() => sfu.stopWatching()} className="bg-black/60 text-white p-1.5 rounded hover:bg-red-500 transition-colors opacity-0 group-hover:opacity-100" title="Stop Watching"><X size={16} /></button>
+      </div>
+
+      {consumerId && (
+        <div className="absolute bottom-2 left-2 flex items-center gap-2 bg-black/60 px-2 py-1 rounded-md z-[9999]">
+          <button
+            onClick={() => setScreenAudioMuted(consumerId, !state.isMuted)}
+            className="text-white hover:text-[#5865f2] transition-colors"
+          >
+            {state.isMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+          </button>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            value={streamVolume}
+            onChange={(e) => {
+              const val = parseFloat(e.target.value);
+              setStreamVolume(val);
+              if (videoRef.current) videoRef.current.volume = val;
+            }}
+            className="w-24 accent-[#5865f2] cursor-pointer"
+          />
+        </div>
+      )}
+
       <button onClick={toggleFullscreen} className="absolute bottom-2 right-2 bg-black/60 text-white p-1.5 rounded hover:bg-black/80 transition-colors opacity-0 group-hover:opacity-100" title="Fullscreen"><Maximize size={16} /></button>
     </div>
   );
@@ -50,7 +122,7 @@ function App() {
     myPeerId, toggleMic, videoProducers, isScreenSharing, consumers,
     activeWatchStream, globalLivePeers, localScreenTrack,
     isDeafened, toggleDeafen, globalOnlineUsers,
-    peerAudioConsumerMap, consumerStates
+    peerAudioConsumerMap, consumerStates, consumerPeerMap
   } = useVoiceStore();
 
   const { activeTextChannel, messages, setActiveTextChannel } = useChatStore();
@@ -135,7 +207,7 @@ function App() {
     if (window.confirm(`'${name}' kanalını silmek istediğinize emin misiniz?`)) {
       try {
         await sfu.deleteChannel(channelId);
-        if (activeTextChannel === channelId) setActiveTextChannel(null); 
+        if (activeTextChannel === channelId) setActiveTextChannel(null);
         if (activeChannel === channelId) sfu.leaveRoom();
       } catch (err) { alert("Kanal silinemedi."); }
     }
@@ -206,7 +278,7 @@ function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, activeTextChannel]);
 
-  const activeVideoTrack = Object.values(consumers).find(t => t.kind === 'video');
+  const activeVideoTrack = activeWatchStream ? Object.entries(consumers).find(([cid, t]) => t.kind === 'video' && consumerPeerMap[cid] === activeWatchStream)?.[1] : null;
   const isMeSpeaking = myPeerId ? !!peers[myPeerId]?.isSpeaking : false;
 
   const onlineMembers = globalOnlineUsers.map(u => {
@@ -229,7 +301,7 @@ function App() {
         <div className="relative group flex justify-center w-full">
           <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-10 bg-white rounded-r-lg transition-all duration-200"></div>
           <div className="w-12 h-12 rounded-[16px] bg-[#5865F2] flex items-center justify-center cursor-pointer text-white shadow-sm transition-all duration-200 hover:rounded-[12px]">
-            <svg className="w-7 h-7" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"><path fill="currentColor" d="M19.73 4.87a18.2 18.2 0 0 0-4.6-1.44c-.21.4-.4.8-.58 1.21-1.69-.25-3.4-.25-5.1 0-.18-.41-.37-.82-.59-1.2-1.6.27-3.14.75-4.6 1.43A19.04 19.04 0 0 0 .96 17.7a18.43 18.43 0 0 0 5.63 2.87c.46-.62.86-1.28 1.22-1.98-.65-.25-1.27-.55-1.88-.89l.46-.48c3.53 1.63 7.38 1.63 10.91 0l.46.48c-.6.34-1.23.64-1.88.89.36.7.76 1.36 1.22 1.98a18.45 18.45 0 0 0 5.63-2.87 19.32 19.32 0 0 0-3.02-12.83ZM8.3 15.12c-1.1 0-2-.94-2-2.1 0-1.16.89-2.11 2-2.11 1.12 0 2.02.95 2 2.11 0-1.16-.89-2.1-2-2.1Zm7.4 0c-1.1 0-2-.94-2-2.1 0-1.16.89-2.11 2-2.11 1.12 0 2.02.95 2 2.11 0 1.16-.88 2.1-2 2.1Z"/></svg>
+            <svg className="w-7 h-7" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"><path fill="currentColor" d="M19.73 4.87a18.2 18.2 0 0 0-4.6-1.44c-.21.4-.4.8-.58 1.21-1.69-.25-3.4-.25-5.1 0-.18-.41-.37-.82-.59-1.2-1.6.27-3.14.75-4.6 1.43A19.04 19.04 0 0 0 .96 17.7a18.43 18.43 0 0 0 5.63 2.87c.46-.62.86-1.28 1.22-1.98-.65-.25-1.27-.55-1.88-.89l.46-.48c3.53 1.63 7.38 1.63 10.91 0l.46.48c-.6.34-1.23.64-1.88.89.36.7.76 1.36 1.22 1.98a18.45 18.45 0 0 0 5.63-2.87 19.32 19.32 0 0 0-3.02-12.83ZM8.3 15.12c-1.1 0-2-.94-2-2.1 0-1.16.89-2.11 2-2.11 1.12 0 2.02.95 2 2.11 0-1.16-.89-2.1-2-2.1Zm7.4 0c-1.1 0-2-.94-2-2.1 0-1.16.89-2.11 2-2.11 1.12 0 2.02.95 2 2.11 0 1.16-.88 2.1-2 2.1Z" /></svg>
           </div>
         </div>
         <div className="w-8 h-[2px] bg-[#35363c] rounded-full my-1"></div>
@@ -273,21 +345,21 @@ function App() {
                       const isSpeaking = peers[pid]?.isSpeaking;
                       const isLive = !!videoProducers[pid] || globalLivePeers.includes(pid);
                       const pu = channelUsers[pid];
-                      
+
                       const audioConsumerId = peerAudioConsumerMap[pid];
                       const isLocallyMuted = audioConsumerId ? consumerStates[audioConsumerId]?.isMuted : false;
 
                       return (
                         <div key={pid} className="flex items-center gap-2 group/peer relative">
                           <img src={pu?.avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${pu?.username || pid}`} alt="peer" className={`w-6 h-6 rounded-full shrink-0 border-2 transition-all ${isSpeaking ? 'border-green-500' : 'border-transparent'}`} />
-                          <span className={`text-[13px] flex-1 truncate ${isSpeaking ? 'text-white' : 'text-[#949ba4]'}`}>{pu?.username || `User ${pid.substring(0,4)}`}</span>
+                          <span className={`text-[13px] flex-1 truncate ${isSpeaking ? 'text-white' : 'text-[#949ba4]'}`}>{pu?.username || `User ${pid.substring(0, 4)}`}</span>
                           <div className="flex items-center gap-1">
                             {isLocallyMuted && <VolumeX size={12} className="text-red-500" />}
                             {pu?.deafened && <Headphones size={12} className="text-red-500" />}
                             {pu?.micMuted && !pu?.deafened && <MicOff size={12} className="text-red-500" />}
-                            <UserVolumeControl peerId={pid} />
+                            <div className="relative z-[9999] bg-gray-900 rounded"><UserVolumeControl peerId={pid} /></div>
                             {isLive && activeWatchStream === pid && (<button onClick={(e) => { e.stopPropagation(); sfu.stopWatching(); }} className="text-[9px] font-bold border border-red-500 text-red-500 px-1 py-0.5 rounded uppercase hover:bg-red-500 hover:text-white transition-colors leading-none">Stop</button>)}
-                            {isLive && activeWatchStream !== pid && (<button onClick={async (e) => { e.stopPropagation(); if (activeChannel !== c.id) { await handleJoinVoice(c.id); setTimeout(() => sfu.watchStream(pid), 600); } else sfu.watchStream(pid); }} className="text-[9px] font-bold bg-red-500 text-white px-1 py-0.5 rounded uppercase hover:bg-red-600 transition-colors leading-none">Watch</button>)}
+                            {isLive && activeWatchStream !== pid && pid !== myPeerId && (<button onClick={async (e) => { e.stopPropagation(); resumeAudioContexts(); if (activeChannel !== c.id) { await handleJoinVoice(c.id); sfu.watchStream(pid); } else sfu.watchStream(pid); }} className="text-[9px] font-bold bg-red-500 text-white px-1 py-0.5 rounded uppercase hover:bg-red-600 transition-colors leading-none">Watch</button>)}
                           </div>
                         </div>
                       );
@@ -345,13 +417,13 @@ function App() {
         <div className="px-4 pb-6 pt-2 shrink-0">
           {pendingFile && (
             <div className="bg-[#2b2d31] border border-[#1e1f22] rounded-t-lg p-3 relative flex items-center gap-4 mb-[-8px] mx-2 shadow-inner z-0 animate-in slide-in-from-bottom-2 duration-200">
-               {pendingFilePreview ? (
-                 <div className="w-16 h-16 rounded overflow-hidden border border-[#232428] shrink-0"><img src={pendingFilePreview} className="w-full h-full object-cover" alt="preview" /></div>
-               ) : (
-                 <div className="w-16 h-16 rounded bg-[#313338] flex items-center justify-center shrink-0 border border-[#232428]"><Paperclip size={24} className="text-[#b5bac1]" /></div>
-               )}
-               <div className="flex flex-col min-w-0"><span className="text-white text-sm font-medium truncate max-w-xs">{pendingFile.name}</span><span className="text-[#949ba4] text-xs uppercase">{pendingFile.type.split('/')[1]}</span></div>
-               <button onClick={() => setPendingFile(null)} className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 shadow-lg hover:bg-red-600 transition-colors"><X size={14} /></button>
+              {pendingFilePreview ? (
+                <div className="w-16 h-16 rounded overflow-hidden border border-[#232428] shrink-0"><img src={pendingFilePreview} className="w-full h-full object-cover" alt="preview" /></div>
+              ) : (
+                <div className="w-16 h-16 rounded bg-[#313338] flex items-center justify-center shrink-0 border border-[#232428]"><Paperclip size={24} className="text-[#b5bac1]" /></div>
+              )}
+              <div className="flex flex-col min-w-0"><span className="text-white text-sm font-medium truncate max-w-xs">{pendingFile.name}</span><span className="text-[#949ba4] text-xs uppercase">{pendingFile.type.split('/')[1]}</span></div>
+              <button onClick={() => setPendingFile(null)} className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 shadow-lg hover:bg-red-600 transition-colors"><X size={14} /></button>
             </div>
           )}
           <div className={`bg-[#383a40] rounded-lg px-4 py-3 flex items-center gap-3 transition-opacity relative z-10 ${isUploading ? 'opacity-50 pointer-events-none' : ''}`}>
@@ -386,21 +458,21 @@ function App() {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 animate-in fade-in duration-200">
           <div className="bg-[#313338] w-full max-w-md rounded-lg shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
             <div className="p-6">
-               <h2 className="text-2xl font-bold text-white mb-2">Kanal Oluştur</h2>
-               <p className="text-[#b5bac1] text-[15px] mb-6">Sunucuna yeni bir kanal ekle ve arkadaşlarınla sohbete başla.</p>
-               <div className="space-y-4">
-                  <div>
-                    <label className="text-xs font-bold text-[#b5bac1] uppercase mb-2 block">Kanal Tipi</label>
-                    <div className="flex flex-col gap-2">
-                       <div onClick={() => setNewChannelType("text")} className={`flex items-center gap-3 p-3 rounded-md cursor-pointer transition-colors ${newChannelType === 'text' ? 'bg-[#404249] text-white' : 'bg-[#2b2d31] text-[#949ba4] hover:bg-[#35373c]'}`}><Hash size={24} /><div><div className="font-bold text-[15px]">Text</div><div className="text-xs opacity-70">Mesaj, görsel, emoji ve gif gönderin.</div></div>{newChannelType === 'text' && <div className="ml-auto w-4 h-4 rounded-full border-4 border-[#5865f2]"></div>}</div>
-                       <div onClick={() => setNewChannelType("voice")} className={`flex items-center gap-3 p-3 rounded-md cursor-pointer transition-colors ${newChannelType === 'voice' ? 'bg-[#404249] text-white' : 'bg-[#2b2d31] text-[#949ba4] hover:bg-[#35373c]'}`}><Mic size={24} /><div><div className="font-bold text-[15px]">Voice</div><div className="text-xs opacity-70">Sesli, görüntülü ve ekran paylaşımıyla sohbet edin.</div></div>{newChannelType === 'voice' && <div className="ml-auto w-4 h-4 rounded-full border-4 border-[#5865f2]"></div>}</div>
-                    </div>
+              <h2 className="text-2xl font-bold text-white mb-2">Kanal Oluştur</h2>
+              <p className="text-[#b5bac1] text-[15px] mb-6">Sunucuna yeni bir kanal ekle ve arkadaşlarınla sohbete başla.</p>
+              <div className="space-y-4">
+                <div>
+                  <label className="text-xs font-bold text-[#b5bac1] uppercase mb-2 block">Kanal Tipi</label>
+                  <div className="flex flex-col gap-2">
+                    <div onClick={() => setNewChannelType("text")} className={`flex items-center gap-3 p-3 rounded-md cursor-pointer transition-colors ${newChannelType === 'text' ? 'bg-[#404249] text-white' : 'bg-[#2b2d31] text-[#949ba4] hover:bg-[#35373c]'}`}><Hash size={24} /><div><div className="font-bold text-[15px]">Text</div><div className="text-xs opacity-70">Mesaj, görsel, emoji ve gif gönderin.</div></div>{newChannelType === 'text' && <div className="ml-auto w-4 h-4 rounded-full border-4 border-[#5865f2]"></div>}</div>
+                    <div onClick={() => setNewChannelType("voice")} className={`flex items-center gap-3 p-3 rounded-md cursor-pointer transition-colors ${newChannelType === 'voice' ? 'bg-[#404249] text-white' : 'bg-[#2b2d31] text-[#949ba4] hover:bg-[#35373c]'}`}><Mic size={24} /><div><div className="font-bold text-[15px]">Voice</div><div className="text-xs opacity-70">Sesli, görüntülü ve ekran paylaşımıyla sohbet edin.</div></div>{newChannelType === 'voice' && <div className="ml-auto w-4 h-4 rounded-full border-4 border-[#5865f2]"></div>}</div>
                   </div>
-                  <div>
-                    <label className="text-xs font-bold text-[#b5bac1] uppercase mb-2 block">Kanal Adı</label>
-                    <div className="relative"><div className="absolute left-3 top-1/2 -translate-y-1/2 text-[#949ba4]">{newChannelType === 'text' ? '#' : <Volume2 size={16}/>}</div><input type="text" className="w-full bg-[#1e1f22] text-[#dbdee1] p-2 pl-9 rounded-md border-none outline-none" placeholder="yeni-kanal" value={newChannelName} onChange={(e) => setNewChannelName(e.target.value.toLowerCase().replace(/\s+/g, '-'))} autoFocus /></div>
-                  </div>
-               </div>
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-[#b5bac1] uppercase mb-2 block">Kanal Adı</label>
+                  <div className="relative"><div className="absolute left-3 top-1/2 -translate-y-1/2 text-[#949ba4]">{newChannelType === 'text' ? '#' : <Volume2 size={16} />}</div><input type="text" className="w-full bg-[#1e1f22] text-[#dbdee1] p-2 pl-9 rounded-md border-none outline-none" placeholder="yeni-kanal" value={newChannelName} onChange={(e) => setNewChannelName(e.target.value.toLowerCase().replace(/\s+/g, '-'))} autoFocus /></div>
+                </div>
+              </div>
             </div>
             <div className="bg-[#2b2d31] p-4 flex justify-end gap-3"><button onClick={() => setIsModalOpen(false)} className="text-white hover:underline text-[14px] px-4">İptal</button><button onClick={handleCreateChannel} className="bg-[#5865f2] hover:bg-[#4752c4] text-white font-bold py-2 px-6 rounded-md transition-colors text-[14px]">Kanal Oluştur</button></div>
           </div>

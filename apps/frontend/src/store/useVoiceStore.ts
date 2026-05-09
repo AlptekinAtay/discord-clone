@@ -14,12 +14,15 @@ interface VoiceState {
   consumers: Record<string, MediaStreamTrack>;
   consumerPeerMap: Record<string, string>; // consumerId -> peerId
   peerAudioConsumerMap: Record<string, string>; // peerId -> audio consumerId
+  screenAudioConsumerMap: Record<string, string>; // peerId -> screen audio consumerId
   consumerStates: Record<string, { volume: number, isMuted: boolean }>;
+  screenAudioStates: Record<string, { volume: number, isMuted: boolean }>;
   
   channelPeers: Record<string, string[]>; // channelId -> array of peerIds
   channelUsers: Record<string, { username: string, avatarUrl: string, micMuted?: boolean, deafened?: boolean }>; // peerId -> userInfo
   
   videoProducers: Record<string, string>; // peerId -> producerId
+  screenAudioProducers: Record<string, string>; // peerId -> screen audio producerId
   activeWatchStream: string | null; // peerId we are watching
   globalLivePeers: string[];
   globalOnlineUsers: { id: string; username: string; avatarUrl: string, micMuted?: boolean, deafened?: boolean }[]; // all peers globally who are live
@@ -38,6 +41,8 @@ interface VoiceState {
   removeConsumer: (consumerId: string) => void;
   setConsumerVolume: (consumerId: string, volume: number) => void;
   setConsumerMuted: (consumerId: string, isMuted: boolean) => void;
+  setScreenAudioVolume: (consumerId: string, volume: number) => void;
+  setScreenAudioMuted: (consumerId: string, isMuted: boolean) => void;
   clearPeers: () => void;
   setChannelPeers: (newState: Record<string, string[]>) => void;
   setChannelUsers: (users: Record<string, { username: string, avatarUrl: string, micMuted?: boolean, deafened?: boolean }>) => void;
@@ -45,7 +50,9 @@ interface VoiceState {
   setGlobalOnlineUsers: (users: { id: string; username: string; avatarUrl: string; micMuted?: boolean; deafened?: boolean }[]) => void;
   
   addVideoProducer: (peerId: string, producerId: string) => void;
+  addScreenAudioProducer: (peerId: string, producerId: string) => void;
   removeVideoProducer: (peerId: string) => void;
+  removeScreenAudioProducer: (peerId: string) => void;
   setActiveWatchStream: (peerId: string | null) => void;
 }
 
@@ -61,10 +68,13 @@ export const useVoiceStore = create<VoiceState>((set) => ({
   consumers: {},
   consumerPeerMap: {},
   peerAudioConsumerMap: {},
+  screenAudioConsumerMap: {},
   consumerStates: {},
+  screenAudioStates: {},
   channelPeers: {},
   channelUsers: {},
   videoProducers: {},
+  screenAudioProducers: {},
   activeWatchStream: null,
   globalLivePeers: [],
   globalOnlineUsers: [],
@@ -105,7 +115,9 @@ export const useVoiceStore = create<VoiceState>((set) => ({
       const newConsumers = { ...state.consumers };
       const newConsumerPeerMap = { ...state.consumerPeerMap };
       const newConsumerStates = { ...state.consumerStates };
+      const newScreenAudioStates = { ...state.screenAudioStates };
       const newPeerAudioConsumerMap = { ...state.peerAudioConsumerMap };
+      const newScreenAudioConsumerMap = { ...state.screenAudioConsumerMap };
 
       // Clean up all consumers related to this peer
       Object.entries(state.consumerPeerMap).forEach(([cid, pid]) => {
@@ -113,9 +125,11 @@ export const useVoiceStore = create<VoiceState>((set) => ({
           delete newConsumers[cid];
           delete newConsumerPeerMap[cid];
           delete newConsumerStates[cid];
+          delete newScreenAudioStates[cid];
         }
       });
       delete newPeerAudioConsumerMap[peerId];
+      delete newScreenAudioConsumerMap[peerId];
 
       return { 
         peers: newPeers, 
@@ -123,7 +137,9 @@ export const useVoiceStore = create<VoiceState>((set) => ({
         consumers: newConsumers,
         consumerPeerMap: newConsumerPeerMap,
         consumerStates: newConsumerStates,
+        screenAudioStates: newScreenAudioStates,
         peerAudioConsumerMap: newPeerAudioConsumerMap,
+        screenAudioConsumerMap: newScreenAudioConsumerMap,
         activeWatchStream: state.activeWatchStream === peerId ? null : state.activeWatchStream
       };
     }),
@@ -131,16 +147,25 @@ export const useVoiceStore = create<VoiceState>((set) => ({
   addConsumer: (consumerId, track, peerId) =>
     set((state) => {
       const isAudio = track.kind === 'audio';
+      const isScreen = (track as any).appData?.source === 'screen-audio';
+      
       return { 
         consumers: { ...state.consumers, [consumerId]: track },
         consumerPeerMap: { ...state.consumerPeerMap, [consumerId]: peerId },
-        peerAudioConsumerMap: isAudio 
+        peerAudioConsumerMap: (isAudio && !isScreen) 
           ? { ...state.peerAudioConsumerMap, [peerId]: consumerId }
           : state.peerAudioConsumerMap,
-        consumerStates: {
+        screenAudioConsumerMap: (isAudio && isScreen)
+          ? { ...state.screenAudioConsumerMap, [peerId]: consumerId }
+          : state.screenAudioConsumerMap,
+        consumerStates: !isScreen ? {
           ...state.consumerStates,
           [consumerId]: state.consumerStates[consumerId] || { volume: 100, isMuted: false }
-        }
+        } : state.consumerStates,
+        screenAudioStates: isScreen ? {
+          ...state.screenAudioStates,
+          [consumerId]: state.screenAudioStates[consumerId] || { volume: 100, isMuted: false }
+        } : state.screenAudioStates
       };
     }),
     
@@ -157,11 +182,25 @@ export const useVoiceStore = create<VoiceState>((set) => ({
       if (peerId && newPeerAudioConsumerMap[peerId] === consumerId) {
         delete newPeerAudioConsumerMap[peerId];
       }
+
+      const newScreenAudioConsumerMap = { ...state.screenAudioConsumerMap };
+      if (peerId && newScreenAudioConsumerMap[peerId] === consumerId) {
+        delete newScreenAudioConsumerMap[peerId];
+      }
+
+      const newConsumerStates = { ...state.consumerStates };
+      delete newConsumerStates[consumerId];
+
+      const newScreenAudioStates = { ...state.screenAudioStates };
+      delete newScreenAudioStates[consumerId];
       
       return { 
         consumers: newConsumers,
         consumerPeerMap: newConsumerPeerMap,
-        peerAudioConsumerMap: newPeerAudioConsumerMap
+        peerAudioConsumerMap: newPeerAudioConsumerMap,
+        screenAudioConsumerMap: newScreenAudioConsumerMap,
+        consumerStates: newConsumerStates,
+        screenAudioStates: newScreenAudioStates
       };
     }),
 
@@ -180,14 +219,33 @@ export const useVoiceStore = create<VoiceState>((set) => ({
         [consumerId]: { ...(state.consumerStates[consumerId] || { volume: 100 }), isMuted }
       }
     })),
+
+  setScreenAudioVolume: (consumerId, volume) =>
+    set((state) => ({
+      screenAudioStates: {
+        ...state.screenAudioStates,
+        [consumerId]: { ...(state.screenAudioStates[consumerId] || { isMuted: false }), volume }
+      }
+    })),
+
+  setScreenAudioMuted: (consumerId, isMuted) =>
+    set((state) => ({
+      screenAudioStates: {
+        ...state.screenAudioStates,
+        [consumerId]: { ...(state.screenAudioStates[consumerId] || { volume: 100 }), isMuted }
+      }
+    })),
     
   clearPeers: () => set({ 
     peers: {}, 
     consumers: {}, 
     consumerPeerMap: {}, 
     peerAudioConsumerMap: {}, 
+    screenAudioConsumerMap: {},
     consumerStates: {}, 
+    screenAudioStates: {},
     videoProducers: {}, 
+    screenAudioProducers: {},
     activeWatchStream: null, 
     globalLivePeers: [], 
     channelUsers: {} 
@@ -202,6 +260,10 @@ export const useVoiceStore = create<VoiceState>((set) => ({
     videoProducers: { ...state.videoProducers, [peerId]: producerId }
   })),
 
+  addScreenAudioProducer: (peerId, producerId) => set((state) => ({
+    screenAudioProducers: { ...state.screenAudioProducers, [peerId]: producerId }
+  })),
+
   removeVideoProducer: (peerId) => set((state) => {
     const newVp = { ...state.videoProducers };
     delete newVp[peerId];
@@ -209,6 +271,12 @@ export const useVoiceStore = create<VoiceState>((set) => ({
       videoProducers: newVp,
       activeWatchStream: state.activeWatchStream === peerId ? null : state.activeWatchStream
     };
+  }),
+
+  removeScreenAudioProducer: (peerId) => set((state) => {
+    const newSap = { ...state.screenAudioProducers };
+    delete newSap[peerId];
+    return { screenAudioProducers: newSap };
   }),
 
   setActiveWatchStream: (peerId) => set({ activeWatchStream: peerId })

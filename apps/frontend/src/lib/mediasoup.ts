@@ -14,7 +14,7 @@ class SFUClient {
   private channelId: string | null = null;
   private pendingRequests = new Map<string, { resolve: Function, reject: Function }>();
   private recvTransportReady = false;
-  private pendingProducers: Array<{ producerId: string; peerId: string }> = [];
+  private pendingProducers: Array<{ producerId: string; peerId: string; appData?: any }> = [];
   private connectionPromise: Promise<void> | null = null;
 
   async connect(wsUrl: string): Promise<void> {
@@ -80,11 +80,23 @@ class SFUClient {
             useVoiceStore.getState().addPeer(payload.peerId);
             if (payload.kind === 'video') {
               useVoiceStore.getState().addVideoProducer(payload.peerId, payload.producerId);
+            } else if (payload.appData?.source === 'screen-audio') {
+              // Screen audio - don't auto-consume, store for WATCH
+              useVoiceStore.getState().addScreenAudioProducer(payload.peerId, payload.producerId);
+              console.log("[SFU] Screen audio producer discovered, stored for WATCH");
+            } else if (payload.appData?.source === 'screen-video') {
+              // Fallback if kind is not video but source is screen-video (unlikely but safe)
+              useVoiceStore.getState().addVideoProducer(payload.peerId, payload.producerId);
             } else if (this.recvTransportReady) {
-              await this.consume(payload.producerId, payload.peerId);
+              // Auto-consume microphone only
+              await this.consume(payload.producerId, payload.peerId, payload.appData);
             } else {
               console.log("[SFU] Queuing producer for", payload.peerId);
-              this.pendingProducers.push({ producerId: payload.producerId, peerId: payload.peerId });
+              this.pendingProducers.push({ 
+                producerId: payload.producerId, 
+                peerId: payload.peerId,
+                appData: payload.appData
+              });
             }
             break;
           case "peer-stopped-video":
@@ -96,9 +108,18 @@ class SFUClient {
           case "peer-left":
             useVoiceStore.getState().removePeer(payload.peerId);
             break;
-          case "producer-closed":
-            useVoiceStore.getState().removeConsumer(payload.consumerId);
+          case "producer-closed": {
+            const { consumerId, peerId } = payload;
+            const track = useVoiceStore.getState().consumers[consumerId];
+            if (track) {
+              console.log(`[SFU] Track stopped for consumer ${consumerId}`);
+              track.stop();
+            }
+            useVoiceStore.getState().removeConsumer(consumerId);
+            useVoiceStore.getState().removeVideoProducer(peerId);
+            useVoiceStore.getState().removeScreenAudioProducer(peerId);
             break;
+          }
           case "new-message": {
             const msg = payload.author
               ? { ...payload.message, author: payload.author }
@@ -203,13 +224,27 @@ class SFUClient {
   }
 
   async stopWatching() {
+    const peerId = useVoiceStore.getState().activeWatchStream;
+    if (!peerId) return;
+
+    console.log(`[SFU] Stopping watch for peer ${peerId}`);
     useVoiceStore.getState().setActiveWatchStream(null);
-    const videoConsumerEntry = Object.entries(useVoiceStore.getState().consumers).find(([, track]) => track.kind === 'video');
-    if (videoConsumerEntry) {
-      const [consumerId, track] = videoConsumerEntry;
-      track.stop();
-      useVoiceStore.getState().removeConsumer(consumerId);
-      await this.request("close-consumer", { consumerId }).catch(e => console.warn(e));
+    
+    const { consumers, consumerPeerMap } = useVoiceStore.getState();
+    
+    for (const [cid, track] of Object.entries(consumers)) {
+      const pid = consumerPeerMap[cid];
+      if (pid === peerId) {
+        const isVideo = track.kind === 'video';
+        const isScreenAudio = (track as any).appData?.type === 'screen';
+        
+        if (isVideo || isScreenAudio) {
+          console.log(`[SFU] Closing broadcast consumer ${cid} for peer ${peerId}`);
+          track.stop();
+          useVoiceStore.getState().removeConsumer(cid);
+          await this.request("close-consumer", { consumerId: cid }).catch(e => console.warn(e));
+        }
+      }
     }
   }
 
@@ -258,9 +293,9 @@ class SFUClient {
     console.log(`[SFU] Ready for ${channelId}. Draining ${this.pendingProducers.length} queued producers...`);
     const toConsume = [...this.pendingProducers];
     this.pendingProducers = [];
-    for (const { producerId, peerId } of toConsume) {
+    for (const { producerId, peerId, appData } of toConsume) {
       console.log("[SFU] Consuming queued producer from", peerId);
-      await this.consume(producerId, peerId);
+      await this.consume(producerId, peerId, appData);
     }
   }
 
@@ -268,15 +303,16 @@ class SFUClient {
     if (!this.device || !this.sendTransport) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: false,
-          autoGainControl: false
+        audio: { 
+          echoCancellation: true, 
+          noiseSuppression: true, 
+          autoGainControl: true 
         } 
       });
       const track = stream.getAudioTracks()[0];
       this.audioProducer = await this.sendTransport.produce({ 
         track,
+        appData: { source: 'mic' },
         codecOptions: {
           opusDtx: false
         }
@@ -298,12 +334,34 @@ class SFUClient {
     if (!this.sendTransport) throw new Error("No send transport");
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } }
+        video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } },
+        audio: true
       });
-      const track = stream.getVideoTracks()[0];
-      this.videoProducer = await this.sendTransport.produce({ track, encodings: [{ maxBitrate: 8000000 }] });
-      useVoiceStore.getState().setScreenSharing(true, track);
-      this.videoProducer.on("trackended", () => this.stopScreenShare());
+      
+      const videoTrack = stream.getVideoTracks()[0];
+      const audioTrack = stream.getAudioTracks()[0];
+
+      this.videoProducer = await this.sendTransport.produce({ 
+        track: videoTrack, 
+        appData: { source: 'screen-video' },
+        encodings: [{ maxBitrate: 8000000 }] 
+      });
+
+      let screenAudioProducer = null;
+      if (audioTrack) {
+        screenAudioProducer = await this.sendTransport.produce({
+          track: audioTrack,
+          appData: { source: 'screen-audio' }
+        });
+      }
+      
+      useVoiceStore.getState().setScreenSharing(true, videoTrack);
+      
+      videoTrack.onended = () => this.stopScreenShare();
+      if (audioTrack) audioTrack.onended = () => this.stopScreenShare();
+
+      // Store producers to close them later
+      (this as any).screenAudioProducer = screenAudioProducer;
     } catch (err) {
       console.error("Screen sharing denied or failed:", err);
       throw err;
@@ -316,23 +374,50 @@ class SFUClient {
       await this.request("stop-producer", { producerId: this.videoProducer.id });
       this.videoProducer = null;
     }
+    if ((this as any).screenAudioProducer) {
+      const p = (this as any).screenAudioProducer;
+      p.close();
+      await this.request("stop-producer", { producerId: p.id });
+      (this as any).screenAudioProducer = null;
+    }
     useVoiceStore.getState().setScreenSharing(false, null);
   }
 
   async watchStream(peerId: string) {
-    const producerId = useVoiceStore.getState().videoProducers[peerId];
-    if (!producerId) return;
+    const videoProducerId = useVoiceStore.getState().videoProducers[peerId];
+    const screenAudioProducerId = useVoiceStore.getState().screenAudioProducers[peerId];
+    
+    if (!videoProducerId) return;
+
+    // Stop current watch if any to clean up previous tracks
+    await this.stopWatching();
+
     useVoiceStore.getState().setActiveWatchStream(peerId);
-    await this.consume(producerId, peerId);
+    
+    // Consume video
+    await this.consume(videoProducerId, peerId, { source: 'screen-video' });
+
+    // Consume screen audio if it exists
+    if (screenAudioProducerId) {
+      console.log("[SFU] Also consuming screen audio for broadcast");
+      await this.consume(screenAudioProducerId, peerId, { source: 'screen-audio' });
+    }
   }
 
-  async consume(producerId: string, peerId: string) {
+  async consume(producerId: string, peerId: string, appData: any = {}) {
+    // Prevent self-consumption to avoid echo
+    const myPeerId = useVoiceStore.getState().myPeerId;
+    if (peerId === myPeerId) {
+      console.log("[SFU] Skipping self-consumption for producer:", producerId);
+      return;
+    }
+
     if (!this.device || !this.recvTransport) {
       console.warn("[SFU] consume called but device/recvTransport not ready");
       return;
     }
     try {
-      console.log(`[SFU] Consuming producer ${producerId} from peer ${peerId}`);
+      console.log(`[SFU] Consuming producer ${producerId} from peer ${peerId}, type=${appData?.type}`);
       const { id, kind, rtpParameters } = await this.request("consume", {
         channelId: this.channelId,
         transportId: this.recvTransport.id,
@@ -341,9 +426,15 @@ class SFUClient {
       });
 
       const consumer = await this.recvTransport.consume({ id, producerId, kind, rtpParameters });
+      console.log(`[SFU] Consumer created locally: ${consumer.id}, kind: ${kind}`);
+      
+      (consumer.track as any).appData = appData; // Store appData in track for VoiceStore to see
+
       await this.request("resume-consumer", { consumerId: consumer.id });
+      console.log(`[SFU] Consumer resumed on server: ${consumer.id}`);
+
       useVoiceStore.getState().addConsumer(consumer.id, consumer.track, peerId);
-      console.log(`[SFU] ✓ Consumer added for peer ${peerId}, kind=${kind}`);
+      console.log(`[SFU] ✓ Consumer added to store for peer ${peerId}, kind=${kind}, trackState=${consumer.track.readyState}`);
     } catch (err) {
       console.error("[SFU] Could not consume track:", err);
     }

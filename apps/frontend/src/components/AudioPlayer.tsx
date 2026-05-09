@@ -4,35 +4,42 @@ import { useVoiceStore } from "../store/useVoiceStore";
 // Global set to keep track of all active audio contexts for resumption on user interaction
 const activeAudioContexts = new Set<AudioContext>();
 
-if (typeof window !== "undefined") {
-  const resumeAllContexts = () => {
-    activeAudioContexts.forEach(ctx => {
-      if (ctx.state === "suspended") {
-        ctx.resume().catch(err => console.warn("Failed to resume AudioContext on interaction:", err));
-      }
-    });
-  };
+export const resumeAudioContexts = () => {
+  activeAudioContexts.forEach(ctx => {
+    if (ctx.state === "suspended") {
+      ctx.resume().catch(err => console.warn("Failed to resume AudioContext on interaction:", err));
+    }
+  });
+};
 
-  window.addEventListener("click", resumeAllContexts);
-  window.addEventListener("touchstart", resumeAllContexts);
-  window.addEventListener("keydown", resumeAllContexts);
+if (typeof window !== "undefined") {
+  window.addEventListener("click", resumeAudioContexts);
+  window.addEventListener("touchstart", resumeAudioContexts);
+  window.addEventListener("keydown", resumeAudioContexts);
 }
 
 export function AudioPlayer({ isDeafened }: { isDeafened: boolean }) {
-  const { consumers, consumerStates } = useVoiceStore();
+  const { consumers, consumerStates, screenAudioStates, myPeerId, consumerPeerMap } = useVoiceStore();
   const audioTracks = Object.entries(consumers).filter(([_, track]) => track.kind === 'audio');
 
   return (
     <>
       {audioTracks.map(([id, track]) => {
+        // Echo Prevention: Don't render own tracks
+        if (consumerPeerMap[id] === myPeerId) return null;
+
+        const isScreen = ((track as any).appData?.source === 'screen-audio') || (screenAudioStates && screenAudioStates[id] !== undefined);
+        if (isScreen) return null;
+
         const state = consumerStates[id] || { volume: 100, isMuted: false };
+
         return (
-          <ConsumerAudio 
-            key={id} 
-            track={track} 
-            globalMuted={isDeafened} 
-            userMuted={state.isMuted} 
-            volume={state.volume} 
+          <ConsumerAudio
+            key={id}
+            track={track}
+            globalMuted={isDeafened}
+            userMuted={state.isMuted}
+            volume={state.volume}
           />
         );
       })}
@@ -40,15 +47,15 @@ export function AudioPlayer({ isDeafened }: { isDeafened: boolean }) {
   );
 }
 
-function ConsumerAudio({ 
-  track, 
-  globalMuted, 
-  userMuted, 
-  volume 
-}: { 
-  track: MediaStreamTrack; 
-  globalMuted: boolean; 
-  userMuted: boolean; 
+function ConsumerAudio({
+  track,
+  globalMuted,
+  userMuted,
+  volume
+}: {
+  track: MediaStreamTrack;
+  globalMuted: boolean;
+  userMuted: boolean;
   volume: number;
 }) {
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -91,7 +98,7 @@ function ConsumerAudio({
     } else {
       // Volume > 100%: use Web Audio GainNode
       el.volume = 1; // Max out element volume
-      
+
       if (!audioCtxRef.current) {
         // Create context lazily only when needed
         const AudioContextClass = (window.AudioContext || (window as any).webkitAudioContext);

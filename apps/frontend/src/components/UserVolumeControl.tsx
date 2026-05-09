@@ -69,7 +69,7 @@ export function UserVolumeControl({ peerId }: UserVolumeControlProps) {
 
       {showSlider && (
         <div
-          className="fixed bg-[#111214] p-3 rounded-lg shadow-2xl flex flex-col items-center gap-2 border border-[#1f2023]"
+          className="fixed bg-gray-900 p-3 rounded-lg shadow-2xl flex flex-col items-center gap-2 border border-[#1f2023]"
           style={{
             top: popupPos.top,
             left: popupPos.left,

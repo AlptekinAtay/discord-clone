@@ -1,12 +1,12 @@
 import { WebSocketServer } from "ws";
-import * as mediasoupTypes from "mediasoup/node/lib/types.js";
+import type { types as mediasoupTypes } from "mediasoup";
 import { createWorker } from "mediasoup";
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 
 const prisma = new PrismaClient();
-const JWT_SECRET = process.env.JWT_SECRET || "super-secret-discord-clone-key-123";
+const JWT_SECRET: string = String(process.env.JWT_SECRET || "super-secret-discord-clone-key-123");
 
 // --- Whitelist Management ---
 async function loadWhitelist() {
@@ -74,7 +74,7 @@ Bun.serve({
 
     if (url.pathname === "/api/login" && req.method === "POST") {
       try {
-        const { email, password } = await req.json();
+        const { email, password } = (await req.json()) as any;
         
         // 1. Check Whitelist (users.json)
         const whitelist = await loadWhitelist();
@@ -131,8 +131,10 @@ Bun.serve({
       }
 
       const token = authHeader.split(" ")[1];
+      if (!token) return new Response(JSON.stringify({ error: "Token missing" }), { status: 401, headers: corsHeaders });
+      
       try {
-        const decoded = jwt.verify(token, JWT_SECRET) as any;
+        const decoded = jwt.verify(token, JWT_SECRET as any) as any;
         const user = await prisma.user.findUnique({ where: { id: decoded.id } });
         if (!user) {
           return new Response(JSON.stringify({ error: "User not found" }), { status: 404, headers: corsHeaders });
@@ -192,6 +194,7 @@ seedChannels();
 interface Peer {
   id: string;
   ws: WebSocket;
+  username: string;
   transports: Map<string, mediasoupTypes.WebRtcTransport>;
   producers: Map<string, mediasoupTypes.Producer>;
   consumers: Map<string, mediasoupTypes.Consumer>;
@@ -203,12 +206,12 @@ interface Peer {
 const peers = new Map<string, Peer>();
 const roomPeers = new Map<string, Set<string>>(); // channelId -> Set of Peer IDs
 
-const mediaCodecs: mediasoupTypes.RtpCodecCapability[] = [
+const mediaCodecs: any[] = [
   {
     kind: "audio",
     mimeType: "audio/opus",
     clockRate: 48000,
-    channels: 2,
+    channels: 2
   },
   {
     kind: "video",
@@ -216,16 +219,6 @@ const mediaCodecs: mediasoupTypes.RtpCodecCapability[] = [
     clockRate: 90000,
     parameters: {
       "x-google-start-bitrate": 1000
-    }
-  },
-  {
-    kind: "video",
-    mimeType: "video/H264",
-    clockRate: 90000,
-    parameters: {
-      "packetization-mode": 1,
-      "profile-level-id": "42e01f",
-      "level-asymmetry-allowed": 1
     }
   }
 ];
@@ -326,7 +319,7 @@ wss.on("connection", (ws, req) => {
 
   let userId = "";
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    const decoded = jwt.verify(token, JWT_SECRET as string) as any;
     userId = decoded.id;
   } catch (e) {
     ws.close(4001, "Invalid token");
@@ -337,6 +330,7 @@ wss.on("connection", (ws, req) => {
   const peer: Peer = {
     id: peerId,
     ws: ws as any,
+    username: "",
     transports: new Map(),
     producers: new Map(),
     consumers: new Map(),
@@ -348,6 +342,7 @@ wss.on("connection", (ws, req) => {
 
   prisma.user.findUnique({ where: { id: userId } }).then(user => {
     if (user) {
+      peer.username = user.username;
       dbUsers.set(peerId, {
         id: peerId,
         username: user.username,
@@ -364,7 +359,6 @@ wss.on("connection", (ws, req) => {
           }
         }));
       });
-      // Broadcast after user is officially in dbUsers
       broadcastChannelState();
     }
   });
@@ -445,7 +439,6 @@ wss.on("connection", (ws, req) => {
         case "send-message": {
           const { channelId, content, fileUrl, fileType } = payload;
 
-          // Save to Prisma DB
           const saved = await prisma.message.create({
             data: { content, channelId, authorId: peerId, fileUrl, fileType },
             include: { author: true }
@@ -481,7 +474,6 @@ wss.on("connection", (ws, req) => {
 
         case "get-messages": {
           const { channelId } = payload;
-          // Fetch last 50 messages from DB, oldest first
           const dbMsgs = await prisma.message.findMany({
             where: { channelId },
             orderBy: { createdAt: "asc" },
@@ -510,18 +502,17 @@ wss.on("connection", (ws, req) => {
           }));
           break;
         }
-        // ------------------
 
         case "join-room": {
           const { channelId } = payload;
 
-          // Leave old room if in one
           if (peer.currentChannelId) {
             roomPeers.get(peer.currentChannelId)?.delete(peerId);
             clearPeerTransports(peer);
           }
 
           const router = await getOrCreateRouter(channelId);
+          if (!roomPeers.has(channelId)) roomPeers.set(channelId, new Set());
           roomPeers.get(channelId)!.add(peerId);
           peer.currentChannelId = channelId;
 
@@ -531,7 +522,6 @@ wss.on("connection", (ws, req) => {
             payload: { routerRtpCapabilities: router.rtpCapabilities }
           }));
 
-          // Notify this new peer about EXISTING producers in the NEW room
           const others = Array.from(roomPeers.get(channelId) || []).filter(pid => pid !== peerId);
           others.forEach(otherId => {
             const otherPeer = peers.get(otherId);
@@ -539,7 +529,12 @@ wss.on("connection", (ws, req) => {
               otherPeer.producers.forEach((producer) => {
                 ws.send(JSON.stringify({
                   type: "new-producer",
-                  payload: { producerId: producer.id, peerId: otherId, kind: producer.kind }
+                  payload: { 
+                    producerId: producer.id, 
+                    peerId: otherId, 
+                    kind: producer.kind,
+                    appData: producer.appData
+                  }
                 }));
               });
             }
@@ -551,14 +546,12 @@ wss.on("connection", (ws, req) => {
 
         case "leave-room": {
           if (peer.currentChannelId) {
-            // Close all transports
             clearPeerTransports(peer);
 
             const oldChannelId = peer.currentChannelId;
             roomPeers.get(oldChannelId)?.delete(peerId);
             peer.currentChannelId = null;
 
-            // Broadcast peer-left to others in the old channel
             const others = Array.from(roomPeers.get(oldChannelId) || []);
             others.forEach(otherId => {
               peers.get(otherId)?.ws.send(JSON.stringify({
@@ -574,7 +567,6 @@ wss.on("connection", (ws, req) => {
         }
 
         case "create-transport": {
-          console.log(`--> [${peer.username}] Transport isteği geldi, oluşturuluyor...`);
           const { channelId } = payload;
           const router = routers.get(channelId);
           if (!router) throw new Error("Router not found");
@@ -588,8 +580,7 @@ wss.on("connection", (ws, req) => {
             enableTcp: true,
             preferUdp: true,
           });
-          console.log("-->Transport başarıyla oluşturuldu ID:", transport.id);
-          transport.on("dtlsstatechange", dtlsState => {
+          transport.on("dtlsstatechange", (dtlsState: any) => {
             if (dtlsState === "closed") transport.close();
           });
 
@@ -619,11 +610,11 @@ wss.on("connection", (ws, req) => {
         }
 
         case "produce": {
-          const { transportId, kind, rtpParameters, channelId } = payload;
+          const { transportId, kind, rtpParameters, channelId, appData } = payload;
           const transport = peer.transports.get(transportId);
           if (!transport) throw new Error("Transport not found");
 
-          const producer = await transport.produce({ kind, rtpParameters });
+          const producer = await transport.produce({ kind, rtpParameters, appData });
           peer.producers.set(producer.id, producer);
 
           ws.send(JSON.stringify({
@@ -632,12 +623,42 @@ wss.on("connection", (ws, req) => {
             payload: { id: producer.id }
           }));
 
-          // Notify others in the room
+          const broadcastClosure = () => {
+            const currentOthers = Array.from(roomPeers.get(channelId) || []).filter(pid => pid !== peerId);
+            currentOthers.forEach(otherId => {
+              peers.get(otherId)?.ws.send(JSON.stringify({
+                type: "producer-closed",
+                payload: { producerId: producer.id, peerId, kind: producer.kind }
+              }));
+              if (producer.kind === 'video') {
+                peers.get(otherId)?.ws.send(JSON.stringify({
+                  type: "peer-stopped-video",
+                  payload: { peerId }
+                }));
+              }
+            });
+          };
+
+          producer.on("transportclose", () => {
+            broadcastClosure();
+            peer.producers.delete(producer.id);
+          });
+
+          producer.on("@close" as any, () => {
+            broadcastClosure();
+            peer.producers.delete(producer.id);
+          });
+
           const others = Array.from(roomPeers.get(channelId) || []).filter(pid => pid !== peerId);
           others.forEach(otherId => {
             peers.get(otherId)?.ws.send(JSON.stringify({
               type: "new-producer",
-              payload: { producerId: producer.id, peerId, kind: producer.kind }
+              payload: { 
+                producerId: producer.id, 
+                peerId, 
+                kind: producer.kind,
+                appData: producer.appData
+              }
             }));
           });
           break;
@@ -649,16 +670,6 @@ wss.on("connection", (ws, req) => {
           if (producer) {
             producer.close();
             peer.producers.delete(producerId);
-
-            if (producer.kind === 'video') {
-              const others = Array.from(roomPeers.get(peer.currentChannelId || "") || []).filter(pid => pid !== peerId);
-              others.forEach(otherId => {
-                peers.get(otherId)?.ws.send(JSON.stringify({
-                  type: "peer-stopped-video",
-                  payload: { peerId }
-                }));
-              });
-            }
           }
           ws.send(JSON.stringify({ id, type: "producer-stopped", payload: { ok: true } }));
           break;
@@ -714,6 +725,16 @@ wss.on("connection", (ws, req) => {
           const consumer = peer.consumers.get(consumerId);
           if (consumer) {
             await consumer.resume();
+            if (consumer.kind === 'video') {
+              setTimeout(async () => {
+                try {
+                  await consumer.requestKeyFrame();
+                  console.log(`[SFU] Keyframe requested for consumer ${consumerId} (after 500ms delay)`);
+                } catch (err) {
+                  console.warn(`[SFU] Could not request keyframe for consumer ${consumerId}:`, err);
+                }
+              }, 500);
+            }
           }
           ws.send(JSON.stringify({ id, type: "consumer-resumed", payload: { ok: true } }));
           break;
