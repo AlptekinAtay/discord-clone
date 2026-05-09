@@ -11,7 +11,7 @@ import { UserVolumeControl } from "./components/UserVolumeControl";
 
 
 function VideoPlayer({ track }: { track: MediaStreamTrack }) {
-  const { activeWatchStream, consumers, consumerPeerMap, screenAudioStates, setScreenAudioVolume, setScreenAudioMuted } = useVoiceStore();
+  const { activeWatchStream, consumers, consumerPeerMap, screenAudioStates, myPeerId } = useVoiceStore();
   const videoRef = useRef<HTMLVideoElement>(null);
 
   const peerId = activeWatchStream;
@@ -66,36 +66,32 @@ function VideoPlayer({ track }: { track: MediaStreamTrack }) {
 
   return (
     <div className="relative w-full h-full flex items-center justify-center bg-black rounded-lg overflow-hidden border border-[#1f2023] mb-4 shadow-xl shrink-0 group relative">
-      <video ref={videoRef} autoPlay playsInline className="max-w-full max-h-full object-contain" />
+      <video 
+        ref={videoRef} 
+        autoPlay 
+        playsInline 
+        muted={peerId === myPeerId}
+        className="max-w-full max-h-full object-contain" 
+      />
       <div className="absolute top-2 left-2 bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded uppercase shadow-sm">LIVE</div>
 
       <div className="absolute top-2 right-2 flex gap-2">
         <button onClick={() => sfu.stopWatching()} className="bg-black/60 text-white p-1.5 rounded hover:bg-red-500 transition-colors opacity-0 group-hover:opacity-100" title="Stop Watching"><X size={16} /></button>
       </div>
 
-      {consumerId && (
-        <div className="absolute bottom-2 left-2 flex items-center gap-2 bg-black/60 px-2 py-1 rounded-md z-[9999]">
-          <button
-            onClick={() => setScreenAudioMuted(consumerId, !state.isMuted)}
-            className="text-white hover:text-[#5865f2] transition-colors"
-          >
-            {state.isMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
-          </button>
-          <input
-            type="range"
-            min="0"
-            max="1"
-            step="0.01"
-            value={streamVolume}
-            onChange={(e) => {
-              const val = parseFloat(e.target.value);
-              setStreamVolume(val);
-              if (videoRef.current) videoRef.current.volume = val;
-            }}
-            className="w-24 accent-[#5865f2] cursor-pointer"
-          />
-        </div>
-      )}
+      <div className="absolute bottom-4 left-4 z-[9999] flex items-center gap-2 bg-black/60 p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity shadow-lg">
+        <Volume2 size={16} className="text-white" />
+        <input 
+          type="range" min="0" max="1" step="0.01" 
+          value={streamVolume} 
+          onChange={(e) => {
+            const val = parseFloat(e.target.value);
+            setStreamVolume(val);
+            if(videoRef.current) videoRef.current.volume = val;
+          }} 
+          className="w-24 accent-[#5865f2] cursor-pointer" 
+        />
+      </div>
 
       <button onClick={toggleFullscreen} className="absolute bottom-2 right-2 bg-black/60 text-white p-1.5 rounded hover:bg-black/80 transition-colors opacity-0 group-hover:opacity-100" title="Fullscreen"><Maximize size={16} /></button>
     </div>
@@ -122,7 +118,7 @@ function App() {
     myPeerId, toggleMic, videoProducers, isScreenSharing, consumers,
     activeWatchStream, globalLivePeers, localScreenTrack,
     isDeafened, toggleDeafen, globalOnlineUsers,
-    peerAudioConsumerMap, consumerStates, consumerPeerMap
+    peerAudioConsumerMap, consumerStates, consumerPeerMap, stopWatching
   } = useVoiceStore();
 
   const { activeTextChannel, messages, setActiveTextChannel } = useChatStore();
@@ -308,7 +304,7 @@ function App() {
       </div>
 
       {/* 2. CHANNEL LIST */}
-      <div className="w-60 bg-[#2b2d31] flex flex-col shrink-0 z-10">
+      <div className="w-60 bg-[#2b2d31] flex flex-col shrink-0 z-40 relative">
         <div className="h-12 border-b border-[#1f2023] flex items-center px-4 font-bold text-gray-100 shadow-sm hover:bg-[#35373c] cursor-pointer transition-colors duration-150 shrink-0">Antigravity Server</div>
         <div className="flex-1 overflow-y-auto p-2 space-y-4 custom-scrollbar">
           <div>

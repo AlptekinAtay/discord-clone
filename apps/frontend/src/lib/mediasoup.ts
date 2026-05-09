@@ -78,20 +78,21 @@ class SFUClient {
             break;
           case "new-producer":
             useVoiceStore.getState().addPeer(payload.peerId);
-            if (payload.kind === 'video') {
+            
+            const isScreenAudio = payload.appData?.source === 'screen-audio';
+            const isScreenVideo = payload.appData?.source === 'screen-video' || payload.kind === 'video';
+
+            if (isScreenVideo) {
               useVoiceStore.getState().addVideoProducer(payload.peerId, payload.producerId);
-            } else if (payload.appData?.source === 'screen-audio') {
-              // Screen audio - don't auto-consume, store for WATCH
+              console.log("[SFU] Screen video producer discovered (WATCH only)");
+            } else if (isScreenAudio) {
               useVoiceStore.getState().addScreenAudioProducer(payload.peerId, payload.producerId);
-              console.log("[SFU] Screen audio producer discovered, stored for WATCH");
-            } else if (payload.appData?.source === 'screen-video') {
-              // Fallback if kind is not video but source is screen-video (unlikely but safe)
-              useVoiceStore.getState().addVideoProducer(payload.peerId, payload.producerId);
+              console.log("[SFU] Screen audio producer discovered (WATCH only)");
             } else if (this.recvTransportReady) {
-              // Auto-consume microphone only
+              // Auto-consume microphone ONLY
               await this.consume(payload.producerId, payload.peerId, payload.appData);
             } else {
-              console.log("[SFU] Queuing producer for", payload.peerId);
+              console.log("[SFU] Queuing microphone producer for", payload.peerId);
               this.pendingProducers.push({ 
                 producerId: payload.producerId, 
                 peerId: payload.peerId,
@@ -118,6 +119,11 @@ class SFUClient {
             useVoiceStore.getState().removeConsumer(consumerId);
             useVoiceStore.getState().removeVideoProducer(peerId);
             useVoiceStore.getState().removeScreenAudioProducer(peerId);
+            
+            // Fix ghost streams: if the stopped producer was being watched, clear state
+            if (useVoiceStore.getState().activeWatchStream === peerId) {
+              useVoiceStore.getState().stopWatching();
+            }
             break;
           }
           case "new-message": {
@@ -270,9 +276,15 @@ class SFUClient {
         callback();
       } catch (err) { errback(err); }
     });
-    this.sendTransport.on("produce", async ({ kind, rtpParameters }: any, callback: Function, errback: Function) => {
+    this.sendTransport.on("produce", async ({ kind, rtpParameters, appData }: any, callback: Function, errback: Function) => {
       try {
-        const { id } = await this.request("produce", { transportId: this.sendTransport.id, kind, rtpParameters, channelId });
+        const { id } = await this.request("produce", { 
+          transportId: this.sendTransport!.id, 
+          kind, 
+          rtpParameters, 
+          channelId,
+          appData 
+        });
         callback({ id });
       } catch (err) { errback(err); }
     });

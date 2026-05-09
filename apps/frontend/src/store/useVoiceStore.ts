@@ -54,6 +54,7 @@ interface VoiceState {
   removeVideoProducer: (peerId: string) => void;
   removeScreenAudioProducer: (peerId: string) => void;
   setActiveWatchStream: (peerId: string | null) => void;
+  stopWatching: () => void;
 }
 
 export const useVoiceStore = create<VoiceState>((set) => ({
@@ -279,6 +280,9 @@ export const useVoiceStore = create<VoiceState>((set) => ({
     return { screenAudioProducers: newSap };
   }),
 
-  setActiveWatchStream: (peerId) => set({ activeWatchStream: peerId })
-}));
+  setActiveWatchStream: (peerId) =>
+    set({ activeWatchStream: peerId }),
 
+  stopWatching: () =>
+    set({ activeWatchStream: null }),
+}));

@@ -533,7 +533,7 @@ wss.on("connection", (ws, req) => {
                     producerId: producer.id, 
                     peerId: otherId, 
                     kind: producer.kind,
-                    appData: producer.appData
+                    appData: producer.appData || {} // Ensure appData is always sent
                   }
                 }));
               });
