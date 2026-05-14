@@ -294,14 +294,14 @@ function App() {
 
       {/* 1. SERVER LIST */}
       <div className="w-[72px] bg-[#1e1f22] flex flex-col items-center py-3 gap-2 shrink-0 z-20 pt-8">
-        <div className="relative group flex justify-center w-full">
-          <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-10 bg-white rounded-r-lg transition-all duration-200"></div>
-          <div className="w-12 h-12 rounded-[16px] bg-[#5865F2] flex items-center justify-center cursor-pointer text-white shadow-sm transition-all duration-200 hover:rounded-[12px]">
-            <svg className="w-7 h-7" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"><path fill="currentColor" d="M19.73 4.87a18.2 18.2 0 0 0-4.6-1.44c-.21.4-.4.8-.58 1.21-1.69-.25-3.4-.25-5.1 0-.18-.41-.37-.82-.59-1.2-1.6.27-3.14.75-4.6 1.43A19.04 19.04 0 0 0 .96 17.7a18.43 18.43 0 0 0 5.63 2.87c.46-.62.86-1.28 1.22-1.98-.65-.25-1.27-.55-1.88-.89l.46-.48c3.53 1.63 7.38 1.63 10.91 0l.46.48c-.6.34-1.23.64-1.88.89.36.7.76 1.36 1.22 1.98a18.45 18.45 0 0 0 5.63-2.87 19.32 19.32 0 0 0-3.02-12.83ZM8.3 15.12c-1.1 0-2-.94-2-2.1 0-1.16.89-2.11 2-2.11 1.12 0 2.02.95 2 2.11 0-1.16-.89-2.1-2-2.1Zm7.4 0c-1.1 0-2-.94-2-2.1 0-1.16.89-2.11 2-2.11 1.12 0 2.02.95 2 2.11 0 1.16-.88 2.1-2 2.1Z" /></svg>
-          </div>
-        </div>
-        <div className="w-8 h-[2px] bg-[#35363c] rounded-full my-1"></div>
-      </div>
+  <div className="relative group flex justify-center w-full">
+    <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-10 bg-white rounded-r-lg transition-all duration-200"></div>
+    <div className="w-12 h-12 rounded-[16px] bg-[#5865F2] flex items-center justify-center cursor-pointer text-white shadow-sm transition-all duration-200 hover:rounded-[12px]">
+      <span className="text-2xl font-bold select-none">A</span>
+    </div>
+  </div>
+  <div className="w-8 h-[2px] bg-[#35363c] rounded-full my-1"></div>
+</div>
 
       {/* 2. CHANNEL LIST */}
       <div className="w-60 bg-[#2b2d31] flex flex-col shrink-0 z-40 relative">
