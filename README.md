@@ -9,13 +9,13 @@ Discord'dan ilham alınarak geliştirilen, gerçek zamanlı mesajlaşma ve sesli
 
 ## 📋 İçindekiler
 
-- [Proje Hakkında](#proje-hakkında)
-- [Özellikler](#özellikler)
-- [Teknoloji Yığını](#teknoloji-yığını)
-- [Proje Yapısı](#proje-yapısı)
-- [Kurulum](#kurulum)
-- [Ortam Değişkenleri](#ortam-değişkenleri)
-- [Katkıda Bulunma](#katkıda-bulunma)
+- [Proje Hakkında](#-proje-hakkında)
+- [Özellikler](#-özellikler)
+- [Teknoloji Yığını](#-teknoloji-yığını)
+- [Proje Yapısı](#-proje-yapısı)
+- [Kurulum](#-kurulum)
+- [Ortam Değişkenleri](#-ortam-değişkenleri)
+- [Katkıda Bulunma](#-katkıda-bulunma)
 
 ---
 
